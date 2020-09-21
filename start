@@ -1,0 +1,389 @@
+#!/bin/bash 
+#-x
+SCRIPT=$(readlink -f $0 2>/dev/null) 
+
+# Get todays day like Mon, Tue and so on
+NOW=$(date +"%a")
+
+# nas backup connections
+NAS=nas
+NAS_IP=192.168.178.10
+MOUNT_NFS="$NAS_IP:pool0"
+MOUNT_LOCAL="/data/pool0"
+
+# mail options
+MAIL_PREFRACE="[nas-backup]"
+MAIL_ATTACH=" --attach="
+
+NAS_MOUNT_DIR=$PWD/nasmount
+# Backup dirs; do not prefix /
+BACKUP_DIRS="homes photo docs docker cloud video"
+BACKUP_DIRS="docs "
+KEYFILE="$PWD/key.txt"
+
+# Backup Log folder
+LOGBASE=$PWD/backup.log
+LOGFILE=$LOGBASE/$NOW.backup.log
+FILELIST=$LOGBASE/$NOW.tar.list
+TAPENAMES=$LOGBASE/$NOW.backup.tapenames.txt
+
+# Tape devie name
+TAPE="/dev/st0"
+TAPESIZE="400*1000*1000*1000"
+TAPESPEED="70*1000*1000"
+BLOCKSIZE="512K"
+
+# Tar options
+TAR_ARGS="-b 1024"
+TAPE_BUFF="5g"
+
+#compression
+# please add the pipe in order to also diable this compression completely
+COMPRESSION_CMD="pigz -3 -p 32 --fast |" 
+DECOMPRESSION_CMD="pigz -dc -3 -p 32 |"
+
+
+###############################
+# Path to binaries
+TAR=/bin/tar
+MT=/usr/bin/mt-st
+MKDIR=/bin/mkdir
+MBUFFER=/usr/bin/mbuffer
+OPENSSL=/usr/bin/openssl
+PIPEMETER=/usr/bin/pipemeter
+COMPRESSION=/usr/bin/pigz
+###############################
+
+wait_for_next_tape() {
+    sendmail_event NEXTTAPE
+	eject_tape
+    echo_log "wait for tape"
+	while true
+	do 
+		 mt -f /dev/st0 status | grep ONLINE >/dev/null
+         rt=$?
+         if [[ $rt -eq 0 ]]
+         then
+			 break;
+		 fi
+		 sleep 2
+	done
+}
+
+eject_tape() {
+	[ -e $MT ] mt -f /dev/st0 status | grep ONLINE >/dev/null
+    rt=$?
+	if [[ $rt -eq 0 ]]
+	then
+		[ -e $MT ] && $MT -f $TAPE rewind
+		[ -e $MT ] && $MT -f $TAPE eject
+	fi
+}
+
+
+###############################################################################
+# log helper functions 
+LOGDELIM="###############################################################################"
+
+echo_log() {
+    >&1 echo $@ 
+#    >&2 echo $@ 
+}
+
+error() {
+    echo_log "rewind on error"
+
+	eject_tape
+    error_log $@
+    sendmail_event FAIL
+    #exit -1
+}
+
+error_log() {
+    echo_log "$LOGDELIM"
+    echo_log "BACKUP FAILED"
+    echo_log "$LOGDELIM"
+    echo_log "reason: $@"
+    echo_log "$LOGDELIM"
+}
+
+###############################################################################
+
+###############################################################################
+# helper function for tape change
+
+calc_time()
+{
+	seconds=$( calc "(( $1 ) % 60 )" )
+	minutes=$( calc "(( $1 ) / 60 ) % 60 " | sed -n "s/\([0-9]*\).*/\1/p" )
+        hours=$(   calc "(( $1 ) / 60 ) / 60 " | sed -n "s/\([0-9]*\).*/\1/p"  )
+	echo "$hours:$minutes:$seconds"
+}
+
+#### Custom functions #####
+sendmail_event() 
+{
+    case $1 in
+        FULLSTART)
+		export start_time=$SECONDS
+    		sendmail "Full Backup started" "Full backup started for $BACKUP_DIRS"
+		;;
+        FULLEND)
+		end_time=$SECONDS
+		time=$(( end_time - start_time ))
+		time_str=$( calc_time $time ) 
+		sendmail \
+			"finished backup" \
+		       	$TAPENAMES  \
+		       	"sucessfull backuped the following dirs $BACKUP_DIRS \n" \
+			"Time needed was $time_str"
+		;;
+        NEXTTAPE)
+    		sendmail "Next Tape please" "Please change tape and enter the tape number "
+		;;
+        FAIL)
+		end_time=$SECONDS
+		time=$(( end_time - start_time ))
+		time_str=$( calc_time $time ) 
+		sendmail \
+			"failed to backup" \
+		       	$TAPENAMES  \
+		       	"failed to backup the following dirs $BACKUP_DIRS \n" \
+			"Time needed was $time_str"
+		;;
+	*)
+		error_log "failed invalid send event"
+		;;
+    esac
+}
+
+sendmail() 
+{	
+	SUBJECT=$1
+	shift
+
+   	if [[ -e $LOGFILE ]]
+	then
+		LOG_ATTACHMENT="-A $LOGFILE"
+	fi
+
+	while true
+        do
+   	     	if [[ -e $1 ]]
+             	then
+                 	attachments+=" -A$1"
+                 	shift
+             	else
+             		break
+        	fi
+        done
+
+	BODY=$@
+
+	echo $LOG_ATTACHMENT
+	eval "echo \"$BODY\" | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" "
+}
+
+###############################################################################
+# mount nas directories
+mount_nas(){
+	if [[ "$HOSTNAME" == "$NAS" ]]
+	then
+    	echo_log "no need to mount nas"
+		[[ -e $NAS_MOUNT_DIR ]] || ln -s $MOUNT_LOCAL $NAS_MOUNT_DIR
+	else
+    	echo_log "mount nas"
+
+    	$MKDIR $NAS_MOUNT_DIR
+    	sudo mount.nfs $MOUNT_NFS $NAS_MOUNT_DIR
+	fi
+}
+###############################################################################
+
+# Make sure all dirs exits
+verify() {
+    
+    local s=0
+    [ -d $LOGBASE ] || $MKDIR -p $LOGBASE || ( error_log "error could not create log file -> stop" && s=1)
+
+    echo_log "verify programs"
+    [ -e $TAR ]         || ( error_log "tar is not installed (curr set to '$TAR' -> stop" && s=1)
+    [ -e $MT ]          || ( error_log "mt is not installed (curr set to '$MT' -> stop" && s=1)
+    [ -e $MKDIR ]       || ( error_log "mkdir is not installed (curr set to '$MKDIR' -> stop" && s=1)
+    [ -e $MBUFFER ]     || ( error_log "mbuffer is not installed (curr set to '$MBUFFER' -> stop" && s=1)
+    [ -e $OPENSSL ]     || ( error_log "opensll is not installed (curr set to '$OPENSSL' -> stop" && s=1)
+    [ -e $PIPEMETER ]   || ( error_log "pipemeter is not installed (curr set to '$PIPEMETER' -> stop" && s=1)
+    [ -e $COMPRESSION ] || ( error_log "compression is not installed (curr set to '$COMPRESSION' -> stop" && s=1)
+
+    echo_log "verify dirs"
+    for d in $BACKUP_DIRS
+    do
+        if [ ! -d $NAS_MOUNT_DIR/$d ];
+        then
+            echo_log "Error : $NAS_MOUNT_DIR/$d directory does not exits!"
+            s=1
+        fi
+    done
+
+    ( [ -e $MT ] && [ -e $TAPE ]) || ( error_log "tape is not present at '$TAPE' -> stop" && s=1)
+
+    [ -e $KEYFILE ]  || ( error_log "key file is empty please generate one with 'openssl rand 512 > $KEYFILE'" && s=1)
+
+    # if not; just die
+    [ $s -eq 1 ] && error "failed -> stop"
+}
+
+print_help() {
+	echo "usage:"
+        echo "sudo backup.sh backup-full                                      | do a full backup of all files to the tape drive"
+        echo "sudo backup.sh estimate-tapes                                   | estimates the number of tapes for the backup"
+        echo "sudo backup.sh tape-list                                        | lists the content of the tape drive"
+        echo "sudo backup.sh recover-data <output dir> [selective file list]  | recovers data from the tape drive "
+}
+
+#### Main logic ####
+
+# Make sure log dir exits
+main() {
+
+    # mount nas if needed
+    mount_nas
+
+    verify
+
+    echo_log "today is $NOW"
+
+    # Okay let us start backup procedure
+    # If it is monday make a full backup;
+    # For Tue to Fri make a partial backup
+    # Weekend no backups
+    case $1 in
+        "backup-full")
+		backup "backup-full"
+		;;
+        "tape-list")
+		backup "tape-list"
+		;;
+        "tape-restore")
+		shift
+		backup "tape-restore" $@
+		;;
+        "estimate-tapes")
+		backup "estimate-tapes"
+		;;
+		*)
+			print_help
+		;;
+    esac
+	
+}
+
+calc() {
+	awk "BEGIN{printf \"%.2f\", $1}"
+}
+
+# Make a full backup
+backup() {
+    local old=$(pwd)
+    cd $NAS_MOUNT_DIR
+
+    case $1 in
+        backup-full)
+    	    echo_log "start full backup"
+    	    sendmail_event FULLSTART 
+    	    echo_log "estimate time for $BACKUP_DIRS"
+	    echo_log "please insert tape in the mean time if not already done"
+	    size=$( du -sbc $BACKUP_DIRS | sed -n "s/\([0-9]*\).*/\1/p" | tail -n1 )
+        $TAR $TAR_ARGS -cvf - $BACKUP_DIRS  2> $FILELIST | \
+			pipemeter -s $size -a -b $BLOCKSIZE -l |
+			$COMPRESSION_CMD \
+			$OPENSSL enc -aes-256-cbc -pass file:$KEYFILE | 
+			pipemeter -s $size -a -b $BLOCKSIZE -l |
+            $MBUFFER \
+                    -A "source $SCRIPT && wait_for_next_tape" \
+                    -P 95 \
+                    -m $TAPE_BUFF \
+                    -f \
+                    -o $TAPE \
+                    -L \
+					-q \
+                    -s$BLOCKSIZE
+            rt=$?
+            if [ ! $rt -eq 0 ]
+            then
+               error "tar command failed with $rt"
+            else
+               sendmail_event FULLEND 
+			   eject_tape
+            fi
+            ;;
+
+        tape-list)
+	    ;&
+        tape-restore)
+	    if [[ $1 == tape-restore ]]
+	    then
+		    OPT="x"
+	    	OUTPUT_DIR="-C $2"
+	    	shift
+	    else
+		    OPT="t"
+	    fi
+            shift #remove tape-restor rest is files and paths
+	    
+
+            echo please enter the number of tapes to read
+            read tapes_count
+            $MBUFFER -n $tapes_count -i $TAPE \
+                -A "source $SCRIPT && wait_for_next_tape" \
+                -P 95 \
+                -m 8G \
+                -f \
+                -L \
+                -s$BLOCKSIZE |
+				$OPENSSL enc -d -aes-256-cbc -pass file:$KEYFILE | 
+				$DECOMPRESSION_CMD \
+            	$TAR $TAR_ARGS -${OPT}vf - $OUTPUT_DIR $@ 2> $FILELIST 
+            ;;
+
+	estimate-tapes)
+		size=$( du -sbc $BACKUP_DIRS | sed -n "s/\([0-9]*\).*/\1/p" | tail -n1 )
+		size_str=$( numfmt --to iec --format "%8.4f" "$size" )
+
+		echo $size
+		tapenumer=$( calc "$size/($TAPESIZE)" )
+		tapetime=$( calc "$size/($TAPESPEED)" )
+		
+		time_str=$( calc_time $tapetime ) 
+
+		echo_log "estimated tapes are $tapenumer for the $size_str"
+		echo_log "estimated time is $time_str (not counting the delay of changes)"
+		echo_log "with the backup of the following dirs $BACKUP_DIRS"
+
+	    ;;
+
+        *)
+            error "unkown backup cmd"
+            ;;
+    esac
+
+    cd $old
+}
+
+#### Main logic ####
+
+# Make sure log dir exits
+
+#sendmail "Full Backup started" "Full backup started for $BACKUP_DIRS"
+
+case "$0" in 
+	*start)
+		echo "Script is a subshell"
+		main $@
+		;;
+	*)
+		echo "Script is being sourced"
+		;;
+esac
+#> $LOGFILE 2>&1
+#main
