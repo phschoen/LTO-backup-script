@@ -56,6 +56,7 @@ MBUFFER=/usr/bin/mbuffer
 OPENSSL=/usr/bin/openssl
 PIPEMETER=/usr/bin/pipemeter
 COMPRESSION=/usr/bin/pigz
+UUENCODE=/usr/bin/uuencode
 ###############################
 
 wait_for_next_tape() {
@@ -160,7 +161,7 @@ sendmail_event()
 			"Time needed was $time_str"
 		;;
         NEXTTAPE)
-    		sendmail "Next Tape please" "Please change tape and enter the tape number "
+    		sendmail "Next Tape please" "test" "Please change tape and enter the tape number "
 		;;
         FAIL)
 		end_time=$SECONDS
@@ -178,40 +179,41 @@ sendmail_event()
     esac
 }
 
-sendmail() 
-{	
+sendmail() {	
 	SUBJECT=$1
 	shift
 	local attachments 
 
-   	#if [[ -e $LOGFILE ]]
-	#then
-		attachments="-A $LOGFILE -A $FILELIST"
-		echo_log "add $LOGFILE"
-		echo_log "add $FILELIST"
-	#fi
+   	if [[ -e $LOGFILE ]]
+	then
+		attachments+="$UUENCODE $LOGFILE $( basename $LOGFILE) "
+	fi
+
+   	if [[ -e $FILELIST ]]
+	then
+		attachments+="$UUENCODE $FILELIST $( basename $FILELIST) "
+	fi
 
 	while true
-        do
-   	     	if [[ -e $1 ]]
-             	then
-                 	attachments+=" -A $1"
-					echo_log "add $1"
-                 	shift
-             	else
-             		break
-        	fi
-        done
+    do
+		if [[ -e $1 ]]
+        then
+			attachments+="$UUENCODE $1 $(basename $1)"
+            shift
+        else
+			break
+        fi
+    done
 
 	BODY=$@
 
-	echo $LOG_ATTACHMENT
-	eval "echo -e '$BODY' | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" $LOG_ATTACHMENT $attachments"
+	eval "( echo -e '$BODY'  $attachments ) | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" $LOG_ATTACHMENT"
+	echo "( echo -e '$BODY'  $attachments ) | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" $LOG_ATTACHMENT"
 }
 
 ###############################################################################
 # mount nas directories
-mount_nas(){
+mount_nas() {
 	if [[ "$HOSTNAME" == "$NAS" ]]
 	then
     	echo_log "no need to mount nas"
@@ -239,6 +241,7 @@ verify() {
     [ -e $OPENSSL ]     || ( error_log "opensll is not installed (curr set to '$OPENSSL' -> stop" && s=1)
     [ -e $PIPEMETER ]   || ( error_log "pipemeter is not installed (curr set to '$PIPEMETER' -> stop" && s=1)
     [ -e $COMPRESSION ] || ( error_log "compression is not installed (curr set to '$COMPRESSION' -> stop" && s=1)
+    [ -e $UUENCODE ]    || ( error_log "uuencode is not installed (curr set to '$UUENCODE' -> stop" && s=1)
 
     echo_log "verify dirs"
     for d in $BACKUP_DIRS
@@ -330,13 +333,13 @@ backup() {
     	    echo_log "estimate time for $BACKUP_DIRS"
 			echo_log "please insert tape in the mean time if not already done"
 			size=$( estimate_size )
-			echo_log "estimates size is $size"
+			echo_log "estimates size is \'$size\'b"
 			$TAR $TAR_ARGS -cvf - $BACKUP_DIRS  2> $FILELIST | \
 				pipemeter -s $size -a -b $BLOCKSIZE -l | \
 				$COMPRESSION_CMD | \
 				$OPENSSL enc -aes-256-cbc -pass file:$KEYFILE | \
 				$MBUFFER \
-                    -A "source $SCRIPT && wait_for_next_tape" \
+                    -A "source $SCRIPT; wait_for_next_tape" \
                     -P 95 \
                     -m $TAPE_BUFF \
                     -f \
@@ -351,7 +354,7 @@ backup() {
                sendmail_event FULLEND 
             fi
 			eject_tape
-			cd old
+			cd $old
             ;;
 
         tape-list)
