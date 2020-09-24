@@ -1,0 +1,5 @@
+nasmount
+key.txt
+nasmount
+*.swp
+backup.log
