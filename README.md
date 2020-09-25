@@ -93,7 +93,7 @@ If this works and you did receive an email you should also receive a email via t
 For a full backup just run the script like this:
 
 
-    sudo backup.sh backup-full
+    sudo start backup-full
 
 
 ### Tape number estimation
@@ -101,14 +101,14 @@ For estimation of time and number of tapes needed for your backup you can execut
 estimation.
 
 
-    sudo backup.sh estimate-tapes
+    sudo start estimate-tapes
 
 
 ### Tape print content
 If you have a backup and you want to get the content of this tapes you can execute this command:
 
 
-    sudo backup.sh tape-list
+    sudo start tape-list
 
 
 You will be asked what number tapes your backup is utilizing.
@@ -121,13 +121,13 @@ If you want to recover some or all of the files you can use this command.
 for a special file
 
 
-    sudo backup.sh recover-data <output dir> <a special file>
+    sudo start recover-data <output dir> <a special file>
 
 
 or for all files
 
 
-    sudo backup.sh recover-data <output dir>
+    sudo start recover-data <output dir>
 
 
 You will be asked what number tapes your backup is utilizing.

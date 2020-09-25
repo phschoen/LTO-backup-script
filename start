@@ -275,21 +275,16 @@ verify() {
 
 print_help() {
     echo "usage:"
-        echo "sudo backup.sh backup-full                                      | do a full backup of all files to the tape drive"
-        echo "sudo backup.sh estimate-tapes                                   | estimates the number of tapes for the backup"
-        echo "sudo backup.sh tape-list                                        | lists the content of the tape drive"
-        echo "sudo backup.sh recover-data <output dir> [selective file list]  | recovers data from the tape drive "
+        echo "sudo $( basename $SCRIPT ) backup-full                                      | do a full backup of all files to the tape drive"
+        echo "sudo $( basename $SCRIPT ) estimate-tapes                                   | estimates the number of tapes for the backup"
+        echo "sudo $( basename $SCRIPT ) tape-list                                        | lists the content of the tape drive"
+        echo "sudo $( basename $SCRIPT ) recover-data <output dir> [selective file list]  | recovers data from the tape drive "
 }
 
 #### Main logic ####
 
 # Make sure log dir exits
 main() {
-
-    # mount nas if needed
-    mount_nas
-
-    verify
 
     echo_log "today is $NOW"
 
@@ -300,18 +295,22 @@ main() {
     case $1 in
         "backup-full")
                 cleanup_log
+                mount_nas
+                verify
                 backup "backup-full"
             ;;
         "tape-list")
                 cleanup_log
+                verify
                 backup "tape-list"
             ;;
         "tape-restore")
-                shift
                 cleanup_log
+                verify
                 backup "tape-restore" $@
             ;;
         "estimate-tapes")
+                verify
                 backup "estimate-tapes"
             ;;
         *)
