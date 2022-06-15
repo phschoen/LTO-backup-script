@@ -1,7 +1,7 @@
-#!/bin/bash 
+#!/bin/bash
 #-x
 WORKDIR=$PWD
-SCRIPT=$(readlink -f $0 2>/dev/null) 
+SCRIPT=$(readlink -f $0 2>/dev/null)
 
 # Get todays day like Mon, Tue and so on
 NOW=$(date +"%a")
@@ -9,6 +9,11 @@ NOW=$(date +"%a")
 # nas backup connections
 NAS=nas
 NAS_IP=192.168.178.10
+SERVER=phschoen@<yourserverip>
+SERVER_DIR=/data/backup
+FILES=/tmp/local.txt
+FILES2=/tmp/server.txt
+
 MOUNT_NFS="$NAS_IP:pool0"
 MOUNT_LOCAL="/data/pool0"
 
@@ -17,8 +22,11 @@ MAIL_PREFRACE="[nas-backup]"
 MAIL_ATTACH=" --attach="
 
 NAS_MOUNT_DIR=$PWD/nasmount
-# Backup dirs; relative from Mount or full path 
+# Backup dirs; relative from Mount or full path
 BACKUP_DIRS="homes photo docs docker cloud video /etc"
+BACKUP_DIRS="photo docs docker cloud video /etc"
+
+BACKUP_DIRS="photo docs docker cloud "
 #BACKUP_DIRS="docs "
 KEYFILE="$PWD/key.txt"
 
@@ -61,42 +69,42 @@ UUENCODE=/usr/bin/uuencode
 
 wait_for_next_tape() {
     sendmail_event NEXTTAPE
-	eject_tape
+    eject_tape
     echo_log "wait for tape"
-	while true
-	do 
-		 mt -f /dev/st0 status | grep ONLINE >/dev/null
-         rt=$?
-         if [[ $rt -eq 0 ]]
-         then
-			 break;
-		 fi
-		 sleep 2
-	done
+    while true
+    do
+        mt -f /dev/st0 status | grep ONLINE >/dev/null
+            rt=$?
+            if [[ $rt -eq 0 ]]
+            then
+            break;
+        fi
+        sleep 2
+    done
 }
 
 eject_tape() {
-	[ -e $MT ] && mt -f /dev/st0 status | grep ONLINE >/dev/null
-    rt=$?
-	if [[ $rt -eq 0 ]]
-	then
-		[ -e $MT ] && $MT -f $TAPE rewind
-		[ -e $MT ] && $MT -f $TAPE eject
-	fi
+    [ -e $MT ] && mt -f /dev/st0 status | grep ONLINE >/dev/null
+        rt=$?
+    if [[ $rt -eq 0 ]]
+    then
+        [ -e $MT ] && $MT -f $TAPE rewind
+        [ -e $MT ] && $MT -f $TAPE eject
+    fi
 }
 
 
 ###############################################################################
-# log helper functions 
+# log helper functions
 LOGDELIM="###############################################################################"
 cleanup_log() {
-	echo "" > $LOGFILE
-	echo "" > $FILELIST
+    echo "" > $LOGFILE
+    echo "" > $FILELIST
 }
 echo_log() {
-    >&1 echo $@ 
+    >&1 echo $@
     echo $@  >> $LOGFILE
-#    >&2 echo $@ 
+#    >&2 echo $@
 }
 
 error() {
@@ -120,120 +128,124 @@ error_log() {
 
 calc_time()
 {
-	seconds=$( calc "(( $1 ) % 60 )" )
-	minutes=$( calc "(( $1 ) / 60 ) % 60 " | sed -n "s/\([0-9]*\).*/\1/p" )
+    seconds=$( calc "(( $1 ) % 60 )" )
+    minutes=$( calc "(( $1 ) / 60 ) % 60 " | sed -n "s/\([0-9]*\).*/\1/p" )
     hours=$(   calc "(( $1 ) / 60 ) / 60 " | sed -n "s/\([0-9]*\).*/\1/p"  )
-	echo "$hours:$minutes:$seconds"
-}
-sendmail_for_backup_needed() 
-{
-	sendmail \
-		"please start a tapebackup" \
-		"A tape backup would be needed now\n" \
-		"$( main estimate-tapes )"
-
-	
+    echo "$hours:$minutes:$seconds"
 }
 
-estimate_size() 
+sendmail_for_backup_needed()
 {
-	cd $NAS_MOUNT_DIR > /dev/null
-	du -sbc $BACKUP_DIRS | sed -n "s/\([0-8]*\).*/\1/p" | tail -n1
-	cd - > /dev/null
+    sendmail \
+        "please start a tapebackup" \
+        "A tape backup would be needed now\n" \
+        "$( main lto-estimate )"
+
+
+}
+
+estimate_size()
+{
+    cd $NAS_MOUNT_DIR > /dev/null
+    du -sbc $BACKUP_DIRS | sed -n "s/\([0-8]*\).*/\1/p" | tail -n1
+
+    cd - > /dev/null
 }
 
 #### Custom functions #####
-sendmail_event() 
+sendmail_event()
 {
     case $1 in
         FULLSTART)
-		export start_time=$SECONDS
-    		sendmail "Full Backup started" "Full backup started for $BACKUP_DIRS"
-		;;
+        export start_time=$SECONDS
+        sendmail "Full Backup started" "Full backup started for $BACKUP_DIRS" \
+            $KEYFILE
+        ;;
         FULLEND)
-		end_time=$SECONDS
-		time=$(( end_time - start_time ))
-		time_str=$( calc_time $time ) 
-		sendmail \
-			"finished backup" \
-		       	$TAPENAMES  \
-		       	"sucessfull backuped the following dirs $BACKUP_DIRS \n" \
-			"Time needed was $time_str"
-		;;
+        end_time=$SECONDS
+        time=$(( end_time - start_time ))
+        time_str=$( calc_time $time )
+        if [[ -e $FILELIST ]]
+        then
+            tar -cjf $FILELIST.bz2.tar $FILELIST
+        fi
+
+        sendmail \
+            "finished backup" \
+            $FILELIST.bz2.tar \
+            "sucessfull backuped the following dirs $BACKUP_DIRS \n" \
+            "Time needed was $time_str"
+        ;;
         NEXTTAPE)
-    		sendmail "Next Tape please" "test" "Please change tape and enter the tape number "
-		;;
+        sendmail "Next Tape please" "test" "Please change tape and not the order."
+        ;;
         FAIL)
-		end_time=$SECONDS
-		time=$(( end_time - start_time ))
-		time_str=$( calc_time $time ) 
-		sendmail \
-			"failed to backup" \
-		       	$TAPENAMES  \
-		       	"failed to backup the following dirs $BACKUP_DIRS \n" \
-			"Time needed was $time_str"
-		;;
-	*)
-		error_log "failed invalid send event"
-		;;
+        end_time=$SECONDS
+        time=$(( end_time - start_time ))
+        time_str=$( calc_time $time )
+        sendmail \
+            "failed to backup" \
+            $TAPENAMES  \
+            "failed to backup the following dirs $BACKUP_DIRS \n" \
+            "Time needed was $time_str"
+        ;;
+    *)
+        error_log "failed invalid send event"
+        ;;
     esac
 }
 
-sendmail() {	
-	SUBJECT=$1
-	shift
-	local attachments 
+sendmail() {
+    SUBJECT=$1
+    shift
+    local attachments
 
-   	if [[ -e $LOGFILE ]]
-	then
-		attachments+="$UUENCODE $LOGFILE $( basename $LOGFILE) "
-	fi
+    if [[ -e $LOGFILE ]]
+    then
+        attachments+="$UUENCODE $LOGFILE $( basename $LOGFILE) ; "
+    fi
 
-   	if [[ -e $FILELIST ]]
-	then
-		attachments+="$UUENCODE $FILELIST $( basename $FILELIST) "
-	fi
-
-	while true
+    while true
     do
-		if [[ -e $1 ]]
+        if [[ -e $1 ]]
         then
-			attachments+="$UUENCODE $1 $(basename $1)"
+            attachments+="$UUENCODE $1 $(basename $1) ; "
             shift
         else
-			break
+            break
         fi
     done
 
-	BODY=$@
+    BODY=$@
 
-	eval "( echo -e '$BODY'  $attachments ) | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" $LOG_ATTACHMENT"
-	echo "( echo -e '$BODY'  $attachments ) | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" $LOG_ATTACHMENT"
+    eval "( echo -e '$BODY' ; $attachments ) | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" $LOG_ATTACHMENT"
+    echo "( echo -e '$BODY' ; $attachments ) | mail root --subject=\"$MAIL_PREFRACE $SUBJECT\" $LOG_ATTACHMENT"
 }
 
 ###############################################################################
 # mount nas directories
 mount_nas() {
-	if [[ "$HOSTNAME" == "$NAS" ]]
-	then
-    	echo_log "no need to mount nas"
-		[[ -e $NAS_MOUNT_DIR ]] || ln -s $MOUNT_LOCAL $NAS_MOUNT_DIR
-	else
-    	echo_log "mount nas"
+    if [[ "$HOSTNAME" == "$NAS" ]]
+    then
+    echo_log "no need to mount nas"
+        [[ -e $NAS_MOUNT_DIR ]] || ln -s $MOUNT_LOCAL $NAS_MOUNT_DIR
+    else
+    echo_log "mount nas"
 
-    	$MKDIR $NAS_MOUNT_DIR
-    	sudo mount.nfs $MOUNT_NFS $NAS_MOUNT_DIR
-	fi
+    $MKDIR $NAS_MOUNT_DIR
+    sudo mount.nfs $MOUNT_NFS $NAS_MOUNT_DIR
+    fi
 }
 ###############################################################################
 
 # Make sure all dirs exits
 verify() {
-    
+
     local s=0
     [ -d $LOGBASE ] || $MKDIR -p $LOGBASE || ( error_log "error could not create log file -> stop" && s=1)
 
     echo_log "verify programs"
+    [ -e $TAPE ]        || ( error_log "tape dev is not present (curr set to '$TAPE' -> stop" && s=1)
     [ -e $TAR ]         || ( error_log "tar is not installed (curr set to '$TAR' -> stop" && s=1)
     [ -e $MT ]          || ( error_log "mt is not installed (curr set to '$MT' -> stop" && s=1)
     [ -e $MKDIR ]       || ( error_log "mkdir is not installed (curr set to '$MKDIR' -> stop" && s=1)
@@ -246,13 +258,13 @@ verify() {
     echo_log "verify dirs"
     for d in $BACKUP_DIRS
     do
-		local test_dir
-		if [[ $d = /* ]] 
-		then
-			test_dir=$d 
-		else
-			test_dir=$NAS_MOUNT_DIR/$d
-		fi
+        local test_dir
+        if [[ $d = /* ]]
+        then
+            test_dir=$d
+        else
+            test_dir=$NAS_MOUNT_DIR/$d
+        fi
 
         if [ ! -d $test_dir ];
         then
@@ -271,10 +283,12 @@ verify() {
 
 print_help() {
 	echo "usage:"
-        echo "sudo backup.sh backup-full                                      | do a full backup of all files to the tape drive"
-        echo "sudo backup.sh estimate-tapes                                   | estimates the number of tapes for the backup"
-        echo "sudo backup.sh tape-list                                        | lists the content of the tape drive"
-        echo "sudo backup.sh recover-data <output dir> [selective file list]  | recovers data from the tape drive "
+    echo "    sudo start lto-full                                             | do a full backup of all files to the tape drive"
+    echo "    sudo start lto-estimate                                         | estimates the number of tapes for the backup"
+    echo "    sudo start lto-list                                             | lists the content of the tape drive"
+    echo "    sudo start lto-recover-data <output dir> [selective file list]  | recovers data from the tape drive "
+    echo "    sudo start remote-full										  | sends backup to a remote server encrypted via rsync/ssh"
+    echo "    sudo start remote-estimate                                      | estimates full backup upload time"
 }
 
 #### Main logic ####
@@ -293,115 +307,263 @@ main() {
     # If it is monday make a full backup;
     # For Tue to Fri make a partial backup
     # Weekend no backups
-    case $1 in
-        "backup-full")
-		cleanup_log
-		backup "backup-full"
-		;;
-        "tape-list")
-		cleanup_log
-		backup "tape-list"
-		;;
-        "tape-restore")
-		shift
-		cleanup_log
-		backup "tape-restore" $@
-		;;
-        "estimate-tapes")
-		backup "estimate-tapes"
-		;;
-		*)
-			print_help
-		;;
+    local cmd=$1
+    shift
+    case $cmd in
+        "lto-full")
+            cleanup_log
+            backup "lto-full"
+        ;;
+        "lto-list")
+            cleanup_log
+            backup "lto-list"
+        ;;
+        "lto-restore")
+            shift
+            cleanup_log
+            backup "lto-restore" $@
+        ;;
+        "lto-estimate")
+            backup "lto-estimate"
+        ;;
+        "remote-full")
+            backup "remote-full" $@
+        ;;
+        "remote-estimate")
+            backup "remote-estimate" $@
+        ;;
+        *)
+            print_help
+        ;;
     esac
-	
+
 }
 
 calc() {
-	awk "BEGIN{printf \"%.2f\", $1}"
+    awk "BEGIN{printf \"%.2f\", $1}"
 }
 
 # Make a full backup
 backup() {
     local old=$(pwd)
 
-    case $1 in
-        backup-full)
-			cd $NAS_MOUNT_DIR
-    	    echo_log "start full backup"
-    	    sendmail_event FULLSTART 
-    	    echo_log "estimate time for $BACKUP_DIRS"
-			echo_log "please insert tape in the mean time if not already done"
-			size=$( estimate_size )
-			echo_log "estimates size is \'$size\'b"
-			$TAR $TAR_ARGS -cvf - $BACKUP_DIRS  2> $FILELIST | \
-				pipemeter -s $size -a -b $BLOCKSIZE -l | \
-				$COMPRESSION_CMD | \
-				$OPENSSL enc -aes-256-cbc -pass file:$KEYFILE | \
-				$MBUFFER \
-                    -A "source $SCRIPT; wait_for_next_tape" \
+    local cmd=$1
+    shift
+
+    case $cmd in
+        lto-full)
+            echo_log "start full backup"
+            sendmail_event FULLSTART
+            echo_log "estimate time for $BACKUP_DIRS"
+            echo_log "please insert tape in the mean time if not already done"
+            if [ ! -f .last_size ] || [[ $(find ".last_size" -mtime +1 -print) ]]; then
+                size=$( estimate_size )
+                echo $size > .last_size
+            else
+                size=$( cat .last_size )
+            fi
+
+            cd $NAS_MOUNT_DIR
+
+            tapenumer=$( calc "$size/($TAPESIZE)" )
+            tapetime=$( calc "$size/($TAPESPEED)" )
+            time_str=$( calc_time $tapetime )
+
+            echo_log "estimates size is $size bytes with $tapenumer tapes with est. $time_str duration"
+            $TAR $TAR_ARGS -cvf - $BACKUP_DIRS  2> $FILELIST | \
+                pipemeter -s $size -a -b $BLOCKSIZE -l | \
+                $COMPRESSION_CMD | \
+                $OPENSSL enc -aes-256-cbc -pass file:$KEYFILE | \
+                $MBUFFER \
+                    -A "bash -c \"source $SCRIPT; wait_for_next_tape\"" \
                     -P 95 \
                     -m $TAPE_BUFF \
                     -f \
                     -o $TAPE \
                     -L \
+                    --tapeaware \
                     -s$BLOCKSIZE
             rt=$?
             if [ ! $rt -eq 0 ]
             then
                error "tar command failed with $rt"
             else
-               sendmail_event FULLEND 
+               sendmail_event FULLEND
             fi
-			eject_tape
-			cd $old
+            eject_tape
+            cd $old
             ;;
 
-        tape-list)
-	    ;&
-        tape-restore)
-	    if [[ $1 == tape-restore ]]
-	    then
-		    OPT="x"
-	    	OUTPUT_DIR="-C $2"
-	    	shift
-	    else
-		    OPT="t"
-	    fi
-            shift #remove tape-restor rest is files and paths
-	    
+        remote-full)
+            #BACKUP_DIR="$PWD/test"
+            #BACKUP_DIR='/data/pool0/photo'
+            BACKUP_DIR='/data/pool0/photo'
+            #EXCLUDE_DIRS='cloud docker homes isos netbackup video vm'
+            #EXCLUDE_DIRS_FLAGS=$(echo "$EXCLUDE_DIRS" | sed -e "s|[^ ]* *|--exclude &|g")
+
+            mkdir -p $PWD/sshfsmount
+            mkdir -p $PWD/encfsmount
+
+
+
+
+            echo "check for sshfs mount "
+            mount | grep sshfsmount
+            rt=$?
+            if [ $rt -eq 1 ]
+            then
+
+                sshfs $SERVER:$SERVER_DIR $PWD/sshfsmount/ -o uid=$(id -u) -o gid=$(id -g)
+                rt=$?
+                if [ ! $rt -eq 0 ]
+                then
+                   error "failed to mount sshfs"
+                   fusermount -u $PWD/encfsmount
+                   fusermount -u $PWD/sshfsmount
+                   exit 1
+                fi
+            else
+                echo_log "no need to mount sshfs"
+            fi
+
+            mount | grep encfsmount
+            rt=$?
+            if [ $rt -eq 1 ]
+            then
+                #encfs $PWD/sshfsmount $PWD/encfsmount
+                ENCFS5_CONFIG=$PWD/test/.encfs6.xml encfs --reverse -o ro $MOUNT_LOCAL $PWD/encfsmount
+                rt=$?
+                if [ ! $rt -eq 0 ]
+                then
+                   error "failed to mount encfs"
+                   fusermount -u $PWD/encfsmount
+                   fusermount -u $PWD/sshfsmount
+                   exit 1
+                fi
+            else
+                echo_log "no need to mount encfs"
+            fi
+
+            #https://stackoverflow.com/questions/24058544/speed-up-rsync-with-simultaneous-concurrent-file-transfers
+            # cat files.txt | parallel -n 500 --lb --pipe --cat rsync --files-from={} user@remote:/dir /dir -avPi
+            if [[ "-sfs"  == "$1" ]]
+            then
+                echo "skip file search"
+                shift
+            else
+                echo "start find"
+                cd $PWD/encfsmount/
+                find $BACKUP_DIRS -type f | sort > $FILES
+                cd -
+                ssh $SERVER "cd $SERVER_DIR && find $BACKUP_DIRS -type f" | sort > $FILES2
+            fi
+
+            if [[ "-srs"  == "$1" ]]
+            then
+                echo "skip file search"
+                shift
+            else
+                echo "start folder create "
+                comm -32 $FILES $FILES2 | \
+                    xargs -d "\n" dirname | \
+                    uniq | \
+                    parallel --bar --jobs 10 \
+                        mkdir -p $PWD/sshfsmount/{}
+
+                echo "start file transfer"
+                # copy over new files via faster rsync since it takes ages otherwise
+                comm -32 $FILES $FILES2 | \
+                    parallel --bar --jobs 10 \
+                    rsync -av \
+                        --info=progress2 \
+                        --partial -rsh=ssh \
+                        --inplace \
+                        -W \
+                        $PWD/encfsmount/{} \
+                        $SERVER:$SERVER_DIR/{}
+
+                        #$PWD/sshfsmount/{}
+                        # $SERVER:$SERVER_DIR/{} \
+                        #$SERVER:$SERVER_DIR/{} \
+
+            fi
+            #now delete the rest
+            rsync $EXCLUDE_DIRS_FLAGS -av --info=progress2 \
+                --partial -rsh=ssh \
+                --inplace \
+                -W \
+                $PWD/encfsmount/ \
+                $SERVER:/data/backup/ \
+                --delete
+
+            #fusermount -u $PWD/encfsmount
+            #fusermount -u $PWD/sshfsmount
+
+
+        ;;
+        lto-list)
+        ;&
+        lto-restore)
+        if [[ $1 == lto-restore ]]
+        then
+            OPT="x"
+        OUTPUT_DIR="-C $2"
+        shift
+        else
+            OPT="t"
+        fi
+            shift #remove lto-restore rest is files and paths
+
 
             echo please enter the number of tapes to read
             read tapes_count
             $MBUFFER -n $tapes_count -i $TAPE \
-                -A "source $SCRIPT && wait_for_next_tape" \
+                -A "bash -c \"source $SCRIPT; wait_for_next_tape\"" \
                 -P 95 \
                 -m 0.5g \
+                --tapeaware \
                 -f \
                 -L \
-				-q \
+                -q \
                 -s$BLOCKSIZE |
-				$OPENSSL enc -d -aes-256-cbc -pass file:$KEYFILE | 
-				$DECOMPRESSION_CMD | \
-            	$TAR $TAR_ARGS -${OPT}vf - $OUTPUT_DIR $@ 2> $FILELIST 
-				#-q \
+                $OPENSSL enc -d -aes-256-cbc -pass file:$KEYFILE |
+                $DECOMPRESSION_CMD | \
+        $TAR $TAR_ARGS -${OPT}vf - $OUTPUT_DIR $@ 2> $FILELIST
+                #-q \
             ;;
 
-	estimate-tapes)
-			size=$( estimate_size )
-			echo $size
+        lto-estimate)
+            size=$( estimate_size )
+            echo $size > .last_size
+            echo $size
 
-			size_str=$( numfmt --to iec --format "%8.4f" "$size" )
+            size_str=$( numfmt --to iec --format "%8.4f" "$size" )
 
-			tapenumer=$( calc "$size/($TAPESIZE)" )
-			tapetime=$( calc "$size/($TAPESPEED)" )
-			
-			time_str=$( calc_time $tapetime ) 
+            tapenumer=$( calc "$size/($TAPESIZE)" )
+            tapetime=$( calc "$size/($TAPESPEED)" )
 
-			echo_log "estimated tapes are $tapenumer for the $size_str"
-			echo_log "estimated time is $time_str (not counting the delay of changes)"
-			echo_log "with the backup of the following dirs $BACKUP_DIRS"
-	    ;;
+            time_str=$( calc_time $tapetime )
+
+            echo_log "estimated tapes are $tapenumer for the $size_str"
+            echo_log "estimated time is $time_str (not counting the delay of changes)"
+            echo_log "with the backup of the following dirs $BACKUP_DIRS"
+        ;;
+        remote-estimate)
+            size=$( estimate_size )
+            echo $size > .last_size
+            echo $size
+
+            size_str=$( numfmt --to iec --format "%8.4f" "$size" )
+			uploadspeed=$( speedtest-cli  --csv --no-download --bytes | awk -F "\"*,\"*" '{print $8}' )
+
+            uploadseconds=$( calc "$size/($uploadspeed)" )
+
+            time_str=$( calc_time $uploadseconds )
+
+            echo_log "estimated upload time for the $size_str"
+            echo_log "is $time_str (not counting the delay of write etc)"
+            echo_log "with the backup of the following dirs $BACKUP_DIRS"
+        ;;
 
         *)
             error "unkown backup cmd"
@@ -416,14 +578,14 @@ backup() {
 
 #sendmail "Full Backup started" "Full backup started for $BACKUP_DIRS"
 
-case "$0" in 
-	*start)
-		echo "Script is a subshell"
-		main $@
-		;;
-	*)
-		echo "Script is being sourced"
-		;;
+case "$0" in
+    *start)
+        echo "Script is a subshell"
+        main $@
+        ;;
+    *)
+        echo "Script is being sourced"
+        ;;
 esac
 #> $LOGFILE 2>&1
 #main

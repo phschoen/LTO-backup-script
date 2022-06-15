@@ -3,3 +3,5 @@ key.txt
 nasmount
 *.swp
 backup.log
+.last_size
+encfsmount
